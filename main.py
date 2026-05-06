@@ -287,6 +287,99 @@ class DataEngine:
             ])
 
     @staticmethod
+    def load_csv(filepath):
+        """Load and normalize a user-uploaded stock CSV. Returns (df, None) or (None, error_str)."""
+        try:
+            df = pd.read_csv(filepath)
+            if df.empty:
+                return None, "The CSV file is empty."
+            col_map = {}
+            for col in df.columns:
+                lower = col.lower().strip()
+                if lower in ['date', 'datetime', 'time', 'timestamp']:
+                    col_map[col] = 'Date'
+                elif lower in ['open', 'open price', 'open_price']:
+                    col_map[col] = 'Open'
+                elif lower in ['high', 'high price', 'high_price']:
+                    col_map[col] = 'High'
+                elif lower in ['low', 'low price', 'low_price']:
+                    col_map[col] = 'Low'
+                elif lower in ['close', 'close price', 'close_price', 'adj close', 'adj_close', 'adjusted close']:
+                    col_map[col] = 'Close'
+                elif lower in ['volume', 'vol']:
+                    col_map[col] = 'Volume'
+            df = df.rename(columns=col_map)
+            # Drop duplicate columns (e.g. both 'Close' and 'Adj Close' map to 'Close')
+            df = df.loc[:, ~df.columns.duplicated()]
+            if 'Close' not in df.columns:
+                return None, "Could not find a 'Close' price column.\nSupported names: Close, close, Adj Close, adjusted close."
+            if 'Date' in df.columns:
+                df['Date'] = pd.to_datetime(df['Date'], infer_datetime_format=True)
+                df = df.set_index('Date')
+            df = df.sort_index()
+            df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
+            df = df.dropna(subset=['Close'])
+            if df.empty:
+                return None, "No valid numeric Close price data found after cleaning."
+            if len(df) < 5:
+                return None, f"Dataset too small ({len(df)} rows). At least 5 data points required."
+            for col in ['Open', 'High', 'Low']:
+                if col not in df.columns:
+                    df[col] = df['Close']
+                else:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(df['Close'])
+            if 'Volume' not in df.columns:
+                df['Volume'] = 0
+            else:
+                df['Volume'] = pd.to_numeric(df['Volume'], errors='coerce').fillna(0)
+            return df, None
+        except Exception as ex:
+            return None, str(ex)
+
+    @staticmethod
+    def generate_ai_summary_from_data(df, trend, sentiment, risk, volatility):
+        """Generate a dynamic, data-driven AI summary for uploaded datasets."""
+        latest = float(df['Close'].iloc[-1])
+        oldest = float(df['Close'].iloc[0])
+        total_return = ((latest - oldest) / oldest) * 100
+        recent_n = min(30, len(df))
+        recent_prices = df['Close'].iloc[-recent_n:]
+        recent_high = float(recent_prices.max())
+        recent_low  = float(recent_prices.min())
+        range_pct   = ((recent_high - recent_low) / recent_low) * 100 if recent_low != 0 else 0
+        momentum_n  = min(10, len(df))
+        mom_start   = float(df['Close'].iloc[-momentum_n])
+        momentum    = ((latest - mom_start) / mom_start) * 100 if mom_start != 0 else 0
+        parts = []
+        if total_return >= 20:
+            parts.append(f"Dataset indicates strong bullish momentum with a {total_return:.1f}% cumulative gain over the full period.")
+        elif total_return >= 5:
+            parts.append(f"Moderate upward drift detected — the dataset registers a {total_return:.1f}% net gain.")
+        elif total_return <= -20:
+            parts.append(f"Dataset reveals sustained bearish pressure, with prices declining {abs(total_return):.1f}% from start to end.")
+        elif total_return <= -5:
+            parts.append(f"A gradual downtrend is evident, posting a {abs(total_return):.1f}% net loss across the period.")
+        else:
+            parts.append(f"Price action is broadly range-bound with a negligible net change of {total_return:+.1f}%.")
+        if volatility > 60:
+            parts.append(f"Price action suggests extreme volatility ({volatility:.1f}% annualized) — high-risk, speculative behavior.")
+        elif volatility > 40:
+            parts.append(f"Elevated volatility at {volatility:.1f}% annualized implies significant price uncertainty and elevated risk.")
+        elif volatility > 20:
+            parts.append(f"Volatility ({volatility:.1f}% annualized) is within a moderate range, consistent with normal market fluctuations.")
+        else:
+            parts.append(f"Low volatility ({volatility:.1f}% annualized) reflects a stable, low-risk price environment.")
+        if momentum >= 5:
+            parts.append(f"Short-term momentum is positive (+{momentum:.1f}%), suggesting improving buying pressure.")
+        elif momentum <= -5:
+            parts.append(f"Short-term momentum is negative ({momentum:.1f}%), indicating recent selling pressure.")
+        if range_pct > 20:
+            parts.append(f"Recent price range spans {range_pct:.1f}% — aggressive price swings detected.")
+        elif range_pct > 10:
+            parts.append(f"Recent range of {range_pct:.1f}% indicates moderate but meaningful price oscillation.")
+        return " ".join(parts)
+
+    @staticmethod
     def fetch_market_strip():
         symbols = ['BTC-USD', 'ETH-USD', 'AAPL', 'MSFT', 'AMZN', 'TSLA', 'GOOGL']
         results = {}
@@ -304,6 +397,264 @@ class DataEngine:
                 except: continue
         except: pass
         return results
+
+class InsightEngine:
+    """Computes 8 deep cross-variable insights from stock OHLCV data."""
+
+    @classmethod
+    def run_all(cls, df):
+        has_vol  = 'Volume' in df.columns and df['Volume'].sum() > 0
+        has_hl   = 'High' in df.columns and 'Low' in df.columns
+        has_open = 'Open' in df.columns
+        has_date = hasattr(df.index, 'day_name')
+        n = len(df)
+        if n < 60:
+            return []
+        runners = [
+            (cls.day_of_week_effect,          has_date),
+            (cls.monthly_seasonality,          has_date and n >= 365),
+            (cls.volume_price_relationship,    has_vol and n >= 100),
+            (cls.volatility_regime,            has_hl and n >= 100),
+            (cls.gap_analysis,                 has_open and n >= 60),
+            (cls.streak_analysis,              True),
+            (cls.drawdown_profile,             n >= 100),
+            (cls.anomaly_detection,            True),
+        ]
+        results = []
+        for fn, cond in runners:
+            if cond:
+                try:
+                    r = fn(df)
+                    if r: results.append(r)
+                except Exception as e:
+                    print(f"Insight error [{fn.__name__}]: {e}")
+        return results
+
+    @classmethod
+    def day_of_week_effect(cls, df):
+        d = df.copy()
+        d['R'] = d['Close'].pct_change() * 100
+        d['Day'] = d.index.day_name()
+        order = [x for x in ['Monday','Tuesday','Wednesday','Thursday','Friday'] if x in d['Day'].values]
+        dow = d.groupby('Day')['R'].mean().reindex(order).dropna()
+        if dow.empty: return None
+        best, worst = dow.idxmax(), dow.idxmin()
+        bv, wv = dow.max(), dow.min()
+        spread = abs(bv - wv)
+        sev = 'info' if spread < 0.05 else ('bullish' if bv > 0 else 'neutral')
+        def cfn(fig, ax):
+            colors = [ACCENT_GREEN if v >= 0 else ACCENT_RED for v in dow.values]
+            bars = ax.barh(list(dow.index), list(dow.values), color=colors, alpha=0.85)
+            ax.axvline(0, color=BORDER_COLOR, lw=1)
+            ax.set_xlabel('Avg Daily Return (%)', color=TEXT_MUTED, fontsize=8)
+            for bar, v in zip(bars, dow.values):
+                ax.text(v + (0.005 if v >= 0 else -0.005), bar.get_y()+bar.get_height()/2,
+                        f'{v:+.2f}%', va='center', ha='left' if v >= 0 else 'right',
+                        color=TEXT_LIGHT, fontsize=8, fontweight='bold')
+        return {'title':'Day-of-Week Effect','icon':'📅','severity':sev,'has_chart':True,'chart_fn':cfn,'chart_size':(4.5,2.5),
+                'headline':f"{best} is strongest (+{bv:.2f}% avg); {worst} is weakest ({wv:.2f}%).",
+                'detail':(f"A {spread:.2f}% performance spread exists between the best and worst trading days. "
+                          f"This weekly rhythm is often driven by institutional rebalancing and options expiry cycles. "
+                          f"Consistently timing entries on {worst} days and exits on {best} days is a known edge.")}
+
+    @classmethod
+    def monthly_seasonality(cls, df):
+        d = df.copy()
+        d['R'] = d['Close'].pct_change() * 100
+        d['M'] = d.index.month
+        names = {1:'Jan',2:'Feb',3:'Mar',4:'Apr',5:'May',6:'Jun',7:'Jul',8:'Aug',9:'Sep',10:'Oct',11:'Nov',12:'Dec'}
+        mo = d.groupby('M')['R'].mean()
+        mo.index = [names[i] for i in mo.index]
+        best, worst = mo.idxmax(), mo.idxmin()
+        bv, wv = mo.max(), mo.min()
+        def cfn(fig, ax):
+            colors = [ACCENT_GREEN if v >= 0 else ACCENT_RED for v in mo.values]
+            ax.bar(list(mo.index), list(mo.values), color=colors, alpha=0.85)
+            ax.axhline(0, color=BORDER_COLOR, lw=1)
+            ax.set_ylabel('Avg Return (%)', color=TEXT_MUTED, fontsize=8)
+            ax.tick_params(axis='x', rotation=45, labelsize=7)
+        return {'title':'Monthly Seasonality','icon':'📆','severity':'bullish' if bv > 0 else 'bearish','has_chart':True,'chart_fn':cfn,'chart_size':(4.5,2.5),
+                'headline':f"{best} is historically strongest (+{bv:.2f}%); {worst} weakest ({wv:.2f}%).",
+                'detail':(f"Seasonal patterns in stock returns reflect earnings cycles, institutional calendar effects, "
+                          f"and tax-loss selling. {best} consistently outperforms likely due to post-earnings momentum "
+                          f"and fund inflows. {worst}'s weakness aligns with typical profit-taking and macro uncertainty periods.")}
+
+    @classmethod
+    def volume_price_relationship(cls, df):
+        d = df.copy()
+        d['R'] = d['Close'].pct_change()
+        d['NR'] = d['R'].shift(-1)
+        d = d.dropna()
+        q90 = d['Volume'].quantile(0.9)
+        hi = d[d['Volume'] >= q90]
+        base_bull = (d['NR'] > 0).mean() * 100
+        hi_bull   = (hi['NR'] > 0).mean() * 100
+        diff = hi_bull - base_bull
+        def cfn(fig, ax):
+            cats = ['Normal Volume', 'High Volume\n(Top 10%)']
+            vals = [base_bull, hi_bull]
+            colors = [ACCENT_BLUE, ACCENT_GREEN if diff > 0 else ACCENT_RED]
+            bars = ax.bar(cats, vals, color=colors, alpha=0.85, width=0.5)
+            ax.axhline(50, color=ACCENT_YELLOW, lw=1, ls='--', alpha=0.7, label='50% baseline')
+            ax.set_ylabel('% Next-day Positive', color=TEXT_MUTED, fontsize=8)
+            ax.set_ylim(0, 100)
+            for bar, v in zip(bars, vals):
+                ax.text(bar.get_x()+bar.get_width()/2, v+1, f'{v:.0f}%', ha='center', color=TEXT_LIGHT, fontsize=10, fontweight='bold')
+        sev = 'bullish' if diff > 5 else ('bearish' if diff < -5 else 'neutral')
+        return {'title':'Volume → Price Signal','icon':'📦','severity':sev,'has_chart':True,'chart_fn':cfn,'chart_size':(3.8,2.5),
+                'headline':f"High-volume days → next day rises {hi_bull:.0f}% of the time (vs {base_bull:.0f}% normally).",
+                'detail':(f"When daily volume exceeds the 90th percentile, the subsequent session closes higher {hi_bull:.0f}% of the time — "
+                          f"a {abs(diff):.1f}% {'bullish' if diff > 0 else 'bearish'} deviation from the {base_bull:.0f}% baseline. "
+                          f"{'This signals institutional accumulation preceding rallies.' if diff > 0 else 'This signals distribution — large players offloading into strength.'}")}
+
+    @classmethod
+    def volatility_regime(cls, df):
+        d = df.copy()
+        d['Rng'] = (d['High'] - d['Low']) / d['Low'] * 100
+        d = d.dropna(subset=['Rng'])
+        curr = d['Rng'].iloc[-1]
+        pct  = (d['Rng'] < curr).mean() * 100
+        avg  = d['Rng'].mean()
+        regime = 'LOW' if pct < 25 else ('HIGH' if pct > 75 else 'NORMAL')
+        sev = 'info' if regime == 'LOW' else ('bearish' if regime == 'HIGH' else 'neutral')
+        impl = ("Low-volatility compression historically precedes breakouts within 10–20 trading days." if regime == 'LOW'
+                else "Elevated volatility signals market stress — risk management is critical." if regime == 'HIGH'
+                else "Volatility is within historical norms — no unusual stress detected.")
+        def cfn(fig, ax):
+            ax.hist(d['Rng'].values, bins=40, color=ACCENT_PURPLE, alpha=0.7, edgecolor='none')
+            ax.axvline(curr, color=ACCENT_GREEN, lw=2, label=f'Current: {curr:.2f}%')
+            ax.axvline(avg, color=ACCENT_YELLOW, lw=1.5, ls='--', label=f'Mean: {avg:.2f}%')
+            ax.set_xlabel('Intraday Range (%)', color=TEXT_MUTED, fontsize=8)
+            ax.set_ylabel('Frequency', color=TEXT_MUTED, fontsize=8)
+            ax.legend(fontsize=7, facecolor=PANEL_BG, edgecolor=BORDER_COLOR, labelcolor=TEXT_LIGHT)
+        return {'title':'Volatility Regime','icon':'🌊','severity':sev,'has_chart':True,'chart_fn':cfn,'chart_size':(4.5,2.5),
+                'headline':f"Volatility regime: {regime} — at {pct:.0f}th percentile historically.",
+                'detail':f"Current intraday range ({curr:.2f}%) is at the {pct:.0f}th percentile of all {len(d)} trading days. Historical mean: {avg:.2f}%. {impl}"}
+
+    @classmethod
+    def gap_analysis(cls, df):
+        d = df.copy()
+        d['PrevC'] = d['Close'].shift(1)
+        d['GapPct'] = (d['Open'] - d['PrevC']) / d['PrevC'] * 100
+        d['DayR']   = (d['Close'] - d['Open']) / d['Open'] * 100
+        d = d.dropna()
+        gu = d[d['GapPct'] > 0]; gd = d[d['GapPct'] < 0]
+        gu_pct = len(gu) / len(d) * 100
+        cont_pct = (gu['DayR'] > 0).mean() * 100 if len(gu) > 10 else 50
+        sev = 'bullish' if gu_pct > 52 and cont_pct > 55 else 'neutral'
+        def cfn(fig, ax):
+            wedges, texts, autos = ax.pie([len(gu), len(gd)], labels=['Gap Up', 'Gap Down'],
+                colors=[ACCENT_GREEN, ACCENT_RED], autopct='%1.0f%%', startangle=90,
+                textprops={'color': TEXT_LIGHT, 'fontsize': 9},
+                wedgeprops={'edgecolor': PANEL_BG, 'linewidth': 2})
+            for at in autos: at.set_color(TEXT_LIGHT)
+        return {'title':'Overnight Gap Analysis','icon':'📈','severity':sev,'has_chart':True,'chart_fn':cfn,'chart_size':(3.5,2.5),
+                'headline':f"Gaps up {gu_pct:.0f}% of sessions; {cont_pct:.0f}% of gap-ups continue intraday.",
+                'detail':(f"This stock opens above the prior close {gu_pct:.0f}% of trading days. "
+                          f"Of those gap-up sessions, {cont_pct:.0f}% close above the open — indicating a "
+                          f"{'momentum bias (gaps continue)' if cont_pct > 55 else 'mean-reversion bias (gaps fill)'}. "
+                          f"Avg gap magnitude: +{gu['GapPct'].mean():.2f}% up / {gd['GapPct'].mean():.2f}% down.")}
+
+    @classmethod
+    def streak_analysis(cls, df):
+        d = df.copy()
+        d['R'] = d['Close'].pct_change()
+        d = d.dropna()
+        streak, streaks = 0, []
+        for v in (d['R'] > 0):
+            streak = (streak + 1) if v else (streak - 1)
+            streak = max(streak, 1) if v else min(streak, -1)
+            streaks.append(streak)
+        d['Streak'] = streaks
+        rev = {}
+        for t in [3, 4, 5]:
+            idx = [i+1 for i,s in enumerate(streaks[:-1]) if s == t]
+            if len(idx) >= 5:
+                rev[t] = (d['R'].iloc[idx] < 0).mean() * 100
+        max_up   = max(streaks)
+        max_down = abs(min(streaks))
+        curr_s   = streaks[-1]
+        curr_txt = f"▲ {abs(curr_s)} up-days" if curr_s > 0 else f"▼ {abs(curr_s)} down-days"
+        if rev:
+            bt = max(rev, key=lambda k: abs(rev[k]-50))
+            rv = rev[bt]
+            sev = 'info' if abs(rv-50) < 10 else ('bearish' if rv > 65 else 'bullish')
+            hl  = f"After {bt}+ consecutive up-days, next day reverses {rv:.0f}% of the time."
+            det = (f"Mean-reversion signal: {rv:.0f}% reversal probability after {bt}+ green days (baseline ~50%). "
+                   f"Longest up-streak: {max_up} days. Longest down-streak: {max_down} days. Current: {curr_txt}.")
+        else:
+            sev, hl = 'info', f"Longest up-streak: {max_up} days. Longest down-streak: {max_down} days."
+            det = f"Current streak: {curr_txt}. Insufficient data for reversal probabilities."
+        def cfn(fig, ax):
+            if not rev: ax.text(0.5,0.5,'Insufficient data',ha='center',va='center',color=TEXT_MUTED,transform=ax.transAxes); return
+            xs = [f"After {t}+\nup-days" for t in rev]
+            ys = list(rev.values())
+            colors = [ACCENT_RED if r > 55 else ACCENT_GREEN if r < 45 else ACCENT_YELLOW for r in ys]
+            bars = ax.bar(xs, ys, color=colors, alpha=0.85, width=0.5)
+            ax.axhline(50, color=ACCENT_YELLOW, lw=1, ls='--', alpha=0.7)
+            ax.set_ylabel('Reversal %', color=TEXT_MUTED, fontsize=8)
+            ax.set_ylim(0, 100)
+            for bar, v in zip(bars, ys):
+                ax.text(bar.get_x()+bar.get_width()/2, v+1, f'{v:.0f}%', ha='center', color=TEXT_LIGHT, fontsize=10, fontweight='bold')
+        return {'title':'Streak & Reversal','icon':'🔁','severity':sev,'has_chart':bool(rev),'chart_fn':cfn,'chart_size':(3.8,2.5),
+                'headline':hl,'detail':det}
+
+    @classmethod
+    def drawdown_profile(cls, df):
+        d = df.copy()
+        d['DD'] = (d['Close'] - d['Close'].cummax()) / d['Close'].cummax() * 100
+        max_dd  = d['DD'].min()
+        curr_dd = d['DD'].iloc[-1]
+        sev = 'bearish' if curr_dd < -5 else ('bullish' if curr_dd > -2 else 'neutral')
+        events = 0
+        in_dd = False
+        for v in d['DD']:
+            if v <= -5 and not in_dd: in_dd = True; events += 1
+            elif v > -1: in_dd = False
+        def cfn(fig, ax):
+            ax.fill_between(range(len(d)), d['DD'].values, 0, color=ACCENT_RED, alpha=0.35)
+            ax.plot(range(len(d)), d['DD'].values, color=ACCENT_RED, lw=1)
+            ax.axhline(0, color=BORDER_COLOR, lw=0.8)
+            ax.axhline(-10, color=ACCENT_YELLOW, lw=0.8, ls='--', alpha=0.5)
+            ax.axhline(curr_dd, color=ACCENT_GREEN, lw=1.2, ls=':', alpha=0.9)
+            ax.set_ylabel('Drawdown (%)', color=TEXT_MUTED, fontsize=8)
+            ax.set_xlabel('Trading Days', color=TEXT_MUTED, fontsize=8)
+        return {'title':'Drawdown Profile','icon':'📉','severity':sev,'has_chart':True,'chart_fn':cfn,'chart_size':(4.5,2.5),
+                'headline':f"Max drawdown: {max_dd:.1f}%. Currently {curr_dd:.1f}% from peak.",
+                'detail':(f"{events} drawdown events ≥5% detected. Max peak-to-trough: {max_dd:.1f}%. "
+                          f"Current price is {abs(curr_dd):.1f}% {'below' if curr_dd < 0 else 'at'} the dataset high. "
+                          f"{'Recovery needed — currently in a drawdown.' if curr_dd < -5 else 'Near all-time highs — healthy price structure.'}")}
+
+    @classmethod
+    def anomaly_detection(cls, df):
+        d = df.copy()
+        d['R'] = d['Close'].pct_change() * 100
+        d = d.dropna(subset=['R'])
+        mean, std = d['R'].mean(), d['R'].std()
+        d['Z'] = (d['R'] - mean) / std
+        anom = d[d['Z'].abs() > 3].copy()
+        if anom.empty: return None
+        pos_n = (anom['Z'] > 0).sum()
+        neg_n = (anom['Z'] < 0).sum()
+        biggest = anom.loc[anom['R'].abs().idxmax()]
+        try: ds = biggest.name.strftime('%b %d, %Y')
+        except: ds = str(biggest.name)
+        sev = 'info'
+        def cfn(fig, ax):
+            ax.scatter(range(len(d)), d['R'].values, color=ACCENT_BLUE, s=4, alpha=0.4, label='Daily returns')
+            ax_idx = [d.index.get_loc(i) for i in anom.index if i in d.index]
+            ax.scatter(ax_idx, anom['R'].values, color=ACCENT_RED, s=40, zorder=5, label='Anomaly (>3σ)')
+            ax.axhline(0, color=BORDER_COLOR, lw=0.8)
+            ax.axhline(mean+3*std, color=ACCENT_YELLOW, lw=0.8, ls='--', alpha=0.6)
+            ax.axhline(mean-3*std, color=ACCENT_YELLOW, lw=0.8, ls='--', alpha=0.6)
+            ax.set_ylabel('Daily Return (%)', color=TEXT_MUTED, fontsize=8)
+            ax.legend(fontsize=7, facecolor=PANEL_BG, edgecolor=BORDER_COLOR, labelcolor=TEXT_LIGHT)
+        return {'title':'Anomaly Detection','icon':'🚨','severity':sev,'has_chart':True,'chart_fn':cfn,'chart_size':(4.5,2.5),
+                'headline':f"{len(anom)} anomalous trading days detected — {pos_n} positive, {neg_n} negative outliers.",
+                'detail':(f"Statistical outliers (|z-score| > 3σ) on {len(anom)} days. "
+                          f"Largest move: {biggest['R']:+.1f}% on {ds}. "
+                          f"{'Positive outliers dominate — extreme rallies exceed crashes in frequency.' if pos_n > neg_n else 'Negative outliers dominate — this stock experiences sharper crashes than rallies.'}")}
+
 
 class LoadingOverlay(ctk.CTkFrame):
     def __init__(self, master):
@@ -433,6 +784,8 @@ class DashboardView(ctk.CTkScrollableFrame):
         self.current_info = None
         self.current_ticker = ""
         self.current_news = []
+        self.csv_mode = False
+        self.csv_filepath = ""
         
         self.grid_columnconfigure(0, weight=1)
         
@@ -460,7 +813,23 @@ class DashboardView(ctk.CTkScrollableFrame):
             command=self.on_fetch_clicked
         )
         self.fetch_btn.pack(side="left", padx=10)
-        
+
+        ctk.CTkLabel(ctrl_frame, text="or", font=ctk.CTkFont(family=FONT_FAMILY, size=12), text_color=TEXT_MUTED).pack(side="left", padx=(0, 8))
+
+        self.upload_btn = ctk.CTkButton(
+            ctrl_frame, text="📂  Upload CSV", width=135, height=35,
+            fg_color=CARD_BG, hover_color="#1E293B", border_width=1, border_color=ACCENT_BLUE,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"), text_color=ACCENT_BLUE,
+            command=self.on_upload_clicked
+        )
+        self.upload_btn.pack(side="left", padx=(0, 10))
+
+        self.file_label = ctk.CTkLabel(
+            ctrl_frame, text="",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=11), text_color=TEXT_MUTED
+        )
+        self.file_label.pack(side="left", padx=(0, 10))
+
         self.export_btn = ctk.CTkButton(
             ctrl_frame, text="Export PDF", width=100, height=35, 
             fg_color=CARD_BG, hover_color="#1E293B", border_width=1, border_color=BORDER_COLOR,
@@ -629,7 +998,11 @@ class DashboardView(ctk.CTkScrollableFrame):
         ticker = self.ticker_entry.get().strip().upper()
         period = self.period_var.get()
         if not ticker: return
-            
+
+        # Reset CSV mode when user clicks Analyze
+        self.csv_mode = False
+        self.file_label.configure(text="")
+
         self.app.overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
         self.app.overlay.start()
         
@@ -638,6 +1011,78 @@ class DashboardView(ctk.CTkScrollableFrame):
             
         thread = threading.Thread(target=self._process_pipeline, args=(ticker, period))
         thread.start()
+
+    def on_upload_clicked(self):
+        filepath = filedialog.askopenfilename(
+            title="Upload Stock Dataset",
+            filetypes=[("CSV Files", "*.csv")]
+        )
+        if not filepath:
+            return
+        self.csv_mode = True
+        self.csv_filepath = filepath
+        filename = os.path.basename(filepath)
+        self.file_label.configure(text=f"📄 {filename}", text_color=ACCENT_BLUE)
+        self.app.overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.app.overlay.start()
+        for widget in self.news_grid_container.winfo_children():
+            widget.destroy()
+        threading.Thread(target=self._process_csv_pipeline, args=(filepath, filename), daemon=True).start()
+
+    def _process_csv_pipeline(self, filepath, filename):
+        try:
+            df, error = DataEngine.load_csv(filepath)
+            if error or df is None:
+                self.after(0, self.app.overlay.stop)
+                self.after(0, lambda: messagebox.showerror(
+                    "Invalid Dataset",
+                    f"\u274c Could not load dataset:\n\n{error}"
+                ))
+                self.after(0, lambda: self.file_label.configure(text="\u26a0\ufe0f Load failed", text_color=ACCENT_RED))
+                return
+            display_name = filename.replace(".csv", "").replace("_", " ").upper()
+            self.current_ticker = display_name
+            df['Returns'] = df['Close'].pct_change()
+            df['MA50']    = df['Close'].rolling(window=min(50, len(df))).mean()
+            df['MA200']   = df['Close'].rolling(window=min(200, len(df))).mean()
+            df = DataEngine.detect_breakout(df)
+            self.current_data = df
+            self.current_info = {}
+            self.current_news = []
+            self.sentiment = "Neutral"
+            self.sentiment_color = ACCENT_YELLOW
+            self.after(0, self.update_gui_with_data)
+            self.after(100, lambda: self._show_csv_success(filename))
+            self.after(150, lambda df=df, n=display_name: self.app.insights_view.populate_insights(df, n))
+            self.after(500, lambda n=display_name: self.app.show_insight_toast(n))
+        except Exception as e:
+            print(f"CSV pipeline error: {e}")
+            self.after(0, lambda: messagebox.showerror("Error", f"Processing failed:\n{e}"))
+        finally:
+            self.after(0, self.app.overlay.stop)
+            self.after(0, lambda: self.export_btn.configure(state="normal"))
+
+    def _show_csv_success(self, filename):
+        success_frame = ctk.CTkFrame(
+            self.news_grid_container, fg_color="#0A2318",
+            corner_radius=10, border_width=1, border_color=ACCENT_GREEN
+        )
+        success_frame.pack(fill="x", pady=(5, 5))
+        top_row = ctk.CTkFrame(success_frame, fg_color="transparent")
+        top_row.pack(fill="x", padx=15, pady=(12, 4))
+        ctk.CTkLabel(
+            top_row, text="\u2705  Dataset loaded successfully",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"), text_color=ACCENT_GREEN
+        ).pack(side="left")
+        ctk.CTkLabel(
+            top_row, text=filename,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=11), text_color=TEXT_MUTED
+        ).pack(side="right")
+        ctk.CTkLabel(
+            success_frame,
+            text="News sentiment is unavailable for uploaded datasets. AI insights are generated from price data only.",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=11), text_color=TEXT_MUTED, justify="left"
+        ).pack(anchor="w", padx=15, pady=(0, 12))
 
     def _process_pipeline(self, ticker, period):
         try:
@@ -663,6 +1108,8 @@ class DashboardView(ctk.CTkScrollableFrame):
             
             self.after(0, self.update_gui_with_data)
             self.after(0, self.app.news_view.populate_news, news, ticker)
+            self.after(50, lambda df=df, t=ticker: self.app.insights_view.populate_insights(df, t))
+            self.after(400, lambda t=ticker: self.app.show_insight_toast(t))
             
         except Exception as e:
             print(f"Error processing: {e}")
@@ -754,7 +1201,10 @@ class DashboardView(ctk.CTkScrollableFrame):
         self.ins_breakout.update_data(brk_text, brk_color, "⚡")
         self.ins_sentiment.update_data(self.sentiment, self.sentiment_color, "📰")
         
-        summary = DataEngine.generate_ai_summary(trend, self.sentiment)
+        if self.csv_mode:
+            summary = DataEngine.generate_ai_summary_from_data(df, trend, self.sentiment, risk_level, volatility)
+        else:
+            summary = DataEngine.generate_ai_summary(trend, self.sentiment)
         self.summary_text.configure(state="normal")
         self.summary_text.delete("0.0", "end")
         self.summary_text.insert("0.0", summary)
@@ -768,7 +1218,9 @@ class DashboardView(ctk.CTkScrollableFrame):
         self.metric_ma.update_data(ma_str)
         self.metric_volat.update_data(f"{volatility:.1f}%")
         
-        if not FINNHUB_API_KEY:
+        if self.csv_mode:
+            pass  # Success banner is rendered by _show_csv_success()
+        elif not FINNHUB_API_KEY:
             ctk.CTkLabel(self.news_grid_container, text="No API Key (FINNHUB_API_KEY)", text_color=TEXT_MUTED).pack(pady=10)
         else:
             if not self.current_news:
@@ -967,6 +1419,204 @@ class AboutView(ctk.CTkScrollableFrame):
         ctk.CTkLabel(final_frame, text="Built for clarity. Designed for precision.", font=ctk.CTkFont(family=FONT_FAMILY, size=18, weight="bold", slant="italic"), text_color=ACCENT_PURPLE).pack(padx=50, pady=25)
 
 
+class InsightsView(ctk.CTkScrollableFrame):
+    """Displays the 8 deep insight cards with embedded charts."""
+    SEV_COLORS = {
+        'bullish': ACCENT_GREEN, 'bearish': ACCENT_RED,
+        'neutral': ACCENT_YELLOW, 'info': ACCENT_BLUE
+    }
+    SEV_LABELS = {
+        'bullish': '🟢 Bullish', 'bearish': '🔴 Bearish',
+        'neutral': '🟡 Neutral', 'info': '🔵 Informational'
+    }
+
+    def __init__(self, master):
+        super().__init__(master, fg_color="transparent")
+        hdr = ctk.CTkFrame(self, fg_color="transparent")
+        hdr.pack(fill="x", padx=30, pady=(25, 5))
+        ctk.CTkLabel(hdr, text="🔍  Deep Market Insights",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=26, weight="bold"),
+            text_color=TEXT_LIGHT).pack(side="left")
+        self.ticker_lbl = ctk.CTkLabel(hdr, text="",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=13), text_color=TEXT_MUTED)
+        self.ticker_lbl.pack(side="right")
+        ctk.CTkLabel(self, text="Cross-variable statistical patterns hidden in the price data.",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=13), text_color=TEXT_MUTED
+        ).pack(anchor="w", padx=30, pady=(0, 20))
+        self.grid_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.grid_frame.pack(fill="both", expand=True, padx=25)
+        self.grid_frame.grid_columnconfigure((0, 1), weight=1)
+        self._show_placeholder()
+
+    def _show_placeholder(self):
+        for w in self.grid_frame.winfo_children(): w.destroy()
+        ctk.CTkLabel(self.grid_frame,
+            text="Analyze a ticker or upload a CSV to generate deep insights.",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=14), text_color=TEXT_MUTED
+        ).grid(row=0, column=0, columnspan=2, pady=60)
+
+    def populate_insights(self, df, ticker):
+        for w in self.grid_frame.winfo_children(): w.destroy()
+        self.ticker_lbl.configure(text=f"Ticker: {ticker}")
+        insights = InsightEngine.run_all(df)
+        self.last_insight_count = len(insights)
+        if not insights:
+            ctk.CTkLabel(self.grid_frame,
+                text="Not enough data to generate insights (minimum 60 rows required).",
+                font=ctk.CTkFont(family=FONT_FAMILY, size=13), text_color=TEXT_MUTED
+            ).grid(row=0, column=0, columnspan=2, pady=60)
+            return
+        for i, ins in enumerate(insights):
+            row, col = divmod(i, 2)
+            card = self._make_card(ins)
+            card.grid(row=row, column=col, sticky="nsew", padx=10, pady=10)
+
+
+    def _make_card(self, ins):
+        sev_color = self.SEV_COLORS.get(ins['severity'], ACCENT_BLUE)
+        card = ctk.CTkFrame(self.grid_frame, fg_color=CARD_BG, corner_radius=14,
+            border_width=1, border_color=sev_color)
+        # Header row
+        hdr = ctk.CTkFrame(card, fg_color="transparent")
+        hdr.pack(fill="x", padx=16, pady=(14, 4))
+        ctk.CTkLabel(hdr, text=f"{ins['icon']}  {ins['title']}",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"),
+            text_color=TEXT_LIGHT).pack(side="left")
+        sev_pill = ctk.CTkFrame(hdr, fg_color=PANEL_BG, corner_radius=8)
+        sev_pill.pack(side="right")
+        ctk.CTkLabel(sev_pill, text=self.SEV_LABELS.get(ins['severity'], ''),
+            font=ctk.CTkFont(family=FONT_FAMILY, size=10, weight="bold"),
+            text_color=sev_color).pack(padx=8, pady=2)
+        # Headline
+        ctk.CTkLabel(card, text=ins['headline'],
+            font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"),
+            text_color=TEXT_LIGHT, justify="left", wraplength=560
+        ).pack(anchor="w", padx=16, pady=(4, 2))
+        # Detail
+        ctk.CTkLabel(card, text=ins['detail'],
+            font=ctk.CTkFont(family=FONT_FAMILY, size=11),
+            text_color=TEXT_MUTED, justify="left", wraplength=560
+        ).pack(anchor="w", padx=16, pady=(0, 8))
+        # Embedded chart
+        if ins.get('has_chart') and ins.get('chart_fn'):
+            w, h = ins.get('chart_size', (4.5, 2.5))
+            fig, ax = plt.subplots(figsize=(w, h), facecolor=PANEL_BG)
+            ax.set_facecolor(PANEL_BG)
+            ax.tick_params(colors=TEXT_MUTED, labelsize=8)
+            for sp in ax.spines.values(): sp.set_color(BORDER_COLOR)
+            try:
+                ins['chart_fn'](fig, ax)
+            except Exception as e:
+                print(f"Chart render error: {e}")
+            fig.tight_layout(pad=0.8)
+            canvas = FigureCanvasTkAgg(fig, master=card)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill="x", padx=10, pady=(0, 14))
+            plt.close(fig)
+        return card
+
+
+class InsightToast(ctk.CTkFrame):
+    """Premium slide-in corner notification directing user to the Insights tab."""
+    def __init__(self, master, ticker, n_insights, on_click):
+        super().__init__(master, fg_color="#161226", corner_radius=16,
+                         border_width=1, border_color="#4A3480", width=340)
+        self._master = master
+        self._auto_id = None
+        self._y = 1.1
+        self._animating = True
+
+        # ── Left purple accent bar (stays within border-radius, no overflow) ──
+        ctk.CTkFrame(self, fg_color=ACCENT_PURPLE, width=5, corner_radius=0
+        ).pack(side="left", fill="y")
+
+        # ── Main content area ──
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(side="left", fill="both", expand=True, padx=(12, 14), pady=14)
+
+        # Top row: icon + title + close button
+        top = ctk.CTkFrame(body, fg_color="transparent")
+        top.pack(fill="x")
+        ctk.CTkLabel(top, text="✦", font=ctk.CTkFont(size=16),
+            text_color=ACCENT_PURPLE).pack(side="left", padx=(0, 7))
+        ctk.CTkLabel(top, text="Insights Ready",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"),
+            text_color=TEXT_LIGHT).pack(side="left")
+        # Visible X button with its own pill background
+        ctk.CTkButton(top, text="✕", width=28, height=28,
+            fg_color="#2D2050", hover_color="#3D2F68",
+            text_color="#C4B5FD", font=ctk.CTkFont(size=12, weight="bold"),
+            corner_radius=8, border_width=1, border_color="#5B4A9A",
+            command=self.dismiss).pack(side="right")
+
+        # Ticker + pattern count badges
+        badges = ctk.CTkFrame(body, fg_color="transparent")
+        badges.pack(fill="x", pady=(10, 0))
+        short = (ticker[:16] + "\u2026") if len(ticker) > 16 else ticker
+        tp = ctk.CTkFrame(badges, fg_color="#231840", corner_radius=6)
+        tp.pack(side="left")
+        ctk.CTkLabel(tp, text=f"  {short}  ",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=11, weight="bold"),
+            text_color="#C4B5FD").pack(padx=2, pady=3)
+        ip = ctk.CTkFrame(badges, fg_color="#0C2416", corner_radius=6)
+        ip.pack(side="left", padx=(6, 0))
+        ctk.CTkLabel(ip, text=f"  ● {n_insights} patterns  ",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=11, weight="bold"),
+            text_color=ACCENT_GREEN).pack(padx=2, pady=3)
+
+        # Divider
+        ctk.CTkFrame(body, fg_color="#2D2050", height=1).pack(fill="x", pady=(10, 8))
+
+        # Subtitle
+        ctk.CTkLabel(body,
+            text="Cross-variable patterns hidden in the\nprice data are ready to explore.",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=11),
+            text_color="#94A3B8", justify="left"
+        ).pack(anchor="w", pady=(0, 10))
+
+        # CTA button
+        ctk.CTkButton(body, text="View Deep Insights  \u2192", height=36,
+            fg_color=ACCENT_PURPLE, hover_color="#7C3AED",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
+            corner_radius=8,
+            command=lambda: [on_click(), self.dismiss()]
+        ).pack(fill="x")
+
+        # Animate in from below screen
+        self.place(relx=0.99, rely=1.1, anchor="se")
+        master.after(80, self._slide_in)
+        self._auto_id = master.after(120000, self.dismiss)  # 2 minutes
+
+    def _slide_in(self):
+        if not self._animating: return
+        target = 0.965
+        if self._y > target:
+            self._y = max(self._y - 0.02, target)
+            try:
+                self.place(relx=0.99, rely=self._y, anchor="se")
+                self._master.after(12, self._slide_in)
+            except: pass
+
+    def dismiss(self):
+        self._animating = False
+        if self._auto_id:
+            try: self._master.after_cancel(self._auto_id)
+            except: pass
+            self._auto_id = None
+        self._slide_out()
+
+    def _slide_out(self):
+        if self._y < 1.12:
+            self._y += 0.022
+            try:
+                self.place(relx=0.99, rely=self._y, anchor="se")
+                self._master.after(12, self._slide_out)
+            except: pass
+        else:
+            try: self.destroy()
+            except: pass
+
+
 class AlphaLensApp(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -985,24 +1635,34 @@ class AlphaLensApp(ctk.CTk):
         self.content_container.grid_rowconfigure(0, weight=1)
         self.content_container.grid_columnconfigure(0, weight=1)
         
-        self.dashboard_view = DashboardView(self.content_container, self)
-        self.news_view = NewsView(self.content_container)
-        self.watchlist_view = WatchlistView(self.content_container)
+        self.dashboard_view   = DashboardView(self.content_container, self)
+        self.news_view        = NewsView(self.content_container)
+        self.insights_view    = InsightsView(self.content_container)
+        self.watchlist_view   = WatchlistView(self.content_container)
         self.how_it_works_view = HowItWorksView(self.content_container)
-        self.about_view = AboutView(self.content_container)
+        self.about_view       = AboutView(self.content_container)
         
         self.views = {
-            "Dashboard": self.dashboard_view,
-            "Watchlist": self.watchlist_view,
-            "News": self.news_view,
+            "Dashboard":    self.dashboard_view,
+            "Insights":     self.insights_view,
+            "Watchlist":    self.watchlist_view,
+            "News":         self.news_view,
             "How It Works": self.how_it_works_view,
-            "About": self.about_view
+            "About":        self.about_view
         }
         
         # Initialize Loading Overlay globally
         self.overlay = LoadingOverlay(self.content_container)
         
         self.show_view("Dashboard")
+
+    def show_insight_toast(self, ticker):
+        """Show the slide-in corner toast prompting user to visit Insights tab."""
+        if hasattr(self, '_toast'):
+            try: self._toast.dismiss()
+            except: pass
+        n = getattr(self.insights_view, 'last_insight_count', 8)
+        self._toast = InsightToast(self, ticker, n, lambda: self.show_view("Insights"))
 
     def _build_market_strip(self):
         self.strip_frame = ctk.CTkFrame(self, fg_color="#1E293B", corner_radius=0, height=35)
@@ -1039,7 +1699,7 @@ class AlphaLensApp(ctk.CTk):
         nav_btns_frame.pack(side="right", padx=30, pady=15)
         
         self.nav_buttons = {}
-        for text in ["Dashboard", "Watchlist", "News", "How It Works", "About"]:
+        for text in ["Dashboard", "Insights", "Watchlist", "News", "How It Works", "About"]:
             btn = ctk.CTkButton(
                 nav_btns_frame, text=text, width=100, height=35,
                 font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"),
