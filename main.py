@@ -108,7 +108,7 @@ class PDFGenerator:
             story = []
 
             # ── HEADER ──
-            story.append(Paragraph("🔮 AlphaLens Market Report", s["title"]))
+            story.append(Paragraph("🔮 PrismQuant Market Report", s["title"]))
             story.append(Paragraph(f"Ticker: {ticker}", s["subtitle"]))
             story.append(Paragraph(
                 f"Generated: {datetime.now().strftime('%B %d, %Y  %H:%M')}",
@@ -205,7 +205,7 @@ class PDFGenerator:
             story.append(HRFlowable(width="100%", thickness=0.8, color=cls.C_PURPLE))
             story.append(Spacer(1, 3*mm))
             story.append(Paragraph(
-                "Built for clarity. Designed for precision.  |  AlphaLens © 2025",
+                "Built for clarity. Designed for precision.  |  PrismQuant © 2025",
                 ParagraphStyle("footer", fontSize=9, textColor=cls.C_MUTED,
                                fontName="Helvetica", alignment=TA_CENTER)
             ))
@@ -943,12 +943,12 @@ class DashboardView(ctk.CTkScrollableFrame):
             return
 
         # 1. Ask user where to save
-        default_name = f"AlphaLens_Report_{self.current_ticker}.pdf"
+        default_name = f"PrismQuant_Report_{self.current_ticker}.pdf"
         save_path = filedialog.asksaveasfilename(
             defaultextension=".pdf",
             filetypes=[("PDF files", "*.pdf")],
             initialfile=default_name,
-            title="Save AlphaLens Report"
+            title="Save PrismQuant Report"
         )
         if not save_path:
             return  # User cancelled
@@ -1340,7 +1340,7 @@ class WatchlistView(ctk.CTkScrollableFrame):
 class HowItWorksView(ctk.CTkScrollableFrame):
     def __init__(self, master):
         super().__init__(master, fg_color="transparent")
-        ctk.CTkLabel(self, text="How AlphaLens Works", font=ctk.CTkFont(family=FONT_FAMILY, size=28, weight="bold"), text_color=ACCENT_PURPLE).pack(pady=(40, 30))
+        ctk.CTkLabel(self, text="How PrismQuant Works", font=ctk.CTkFont(family=FONT_FAMILY, size=28, weight="bold"), text_color=ACCENT_PURPLE).pack(pady=(40, 30))
         container = ctk.CTkFrame(self, fg_color=PANEL_BG, corner_radius=15, border_width=1, border_color=BORDER_COLOR)
         container.pack(fill="both", expand=True, padx=100, pady=(0, 40))
         
@@ -1369,10 +1369,10 @@ class AboutView(ctk.CTkScrollableFrame):
         
         header_frame = ctk.CTkFrame(main_container, fg_color="transparent")
         header_frame.pack(fill="x", pady=(20, 10))
-        ctk.CTkLabel(header_frame, text="About AlphaLens", font=ctk.CTkFont(family=FONT_FAMILY, size=34, weight="bold"), text_color=TEXT_LIGHT).pack()
+        ctk.CTkLabel(header_frame, text="About PrismQuant", font=ctk.CTkFont(family=FONT_FAMILY, size=34, weight="bold"), text_color=TEXT_LIGHT).pack()
         ctk.CTkLabel(header_frame, text="See Beyond the Market", font=ctk.CTkFont(family=FONT_FAMILY, size=16), text_color=ACCENT_PURPLE).pack(pady=(5, 0))
         
-        intro_text = "AlphaLens is a financial intelligence dashboard that transforms raw market data into actionable insights using advanced analysis and real-time information."
+        intro_text = "PrismQuant is a financial intelligence dashboard that transforms raw market data into actionable insights using advanced analysis and real-time information."
         ctk.CTkLabel(main_container, text=intro_text, font=ctk.CTkFont(family=FONT_FAMILY, size=15), text_color=TEXT_MUTED, justify="center", wraplength=700).pack(pady=(20, 40))
         
         ctk.CTkLabel(main_container, text="Core Capabilities", font=ctk.CTkFont(family=FONT_FAMILY, size=20, weight="bold"), text_color=TEXT_LIGHT).pack(anchor="w", pady=(0, 15))
@@ -1617,10 +1617,10 @@ class InsightToast(ctk.CTkFrame):
             except: pass
 
 
-class AlphaLensApp(ctk.CTk):
+class PrismQuantApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("AlphaLens | Premium Market Analytics")
+        self.title("PrismQuant | Premium Market Analytics")
         self.geometry("1400x950")
         self.configure(fg_color=BG_COLOR)
         
@@ -1693,7 +1693,7 @@ class AlphaLensApp(ctk.CTk):
         brand_frame = ctk.CTkFrame(nav_frame, fg_color="transparent")
         brand_frame.pack(side="left", padx=30, pady=15)
         ctk.CTkLabel(brand_frame, text="🔮", font=ctk.CTkFont(size=24)).pack(side="left", padx=(0, 10))
-        ctk.CTkLabel(brand_frame, text="AlphaLens", font=ctk.CTkFont(family=FONT_FAMILY, size=22, weight="bold"), text_color=ACCENT_PURPLE).pack(side="left")
+        ctk.CTkLabel(brand_frame, text="PrismQuant", font=ctk.CTkFont(family=FONT_FAMILY, size=22, weight="bold"), text_color=ACCENT_PURPLE).pack(side="left")
         
         nav_btns_frame = ctk.CTkFrame(nav_frame, fg_color="transparent")
         nav_btns_frame.pack(side="right", padx=30, pady=15)
@@ -1722,5 +1722,5 @@ class AlphaLensApp(ctk.CTk):
         self.views[view_name].tkraise()
 
 if __name__ == "__main__":
-    app = AlphaLensApp()
+    app = PrismQuantApp()
     app.mainloop()
